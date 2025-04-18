@@ -21,7 +21,7 @@ def parse_args_and_config():
                         help='Path for the diffusion model checkpoint to load for evaluation')
     parser.add_argument("--sampling_timesteps", type=int, default=10,
                         help="Number of implicit sampling steps")
-    parser.add_argument("--image_folder", default='', type=str,
+    parser.add_argument("--image_folder", default='./result', type=str,
                         help="Location to save restored images")
     parser.add_argument('--seed', default=230, type=int, metavar='N',
                         help='Seed for initializing training (default: 230)')
