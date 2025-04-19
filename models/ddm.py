@@ -292,7 +292,11 @@ class Net(nn.Module):
             x = gt_LL_LL * a.sqrt() + e * (1.0 - a).sqrt()
             noise_output = self.Unet(torch.cat([input_LL_LL, x], dim=1), t.float())
             denoise_LL_LL = self.sample_training(input_LL_LL, b)
+            if denoise_LL_LL.dim() == 3:
+               denoise_LL_LL = denoise_LL_LL.unsqueeze(0)
 
+            if input_high1.dim() == 3:
+               input_high1 = input_high1.unsqueeze(0)
             pred_LL = idwt(torch.cat((denoise_LL_LL, input_high1), dim=0))
 
             pred_x = idwt(torch.cat((pred_LL, input_high0), dim=0))
