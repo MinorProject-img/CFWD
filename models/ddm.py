@@ -244,7 +244,7 @@ class Net(nn.Module):
             xs.append(xt_next.to(x.device))
 
         # return xs[-1]
-        return xs
+        return torch.tensor(xs[-1])
 
     def forward(self, x):
         data_dict = {}
