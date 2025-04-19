@@ -281,7 +281,33 @@ class Net(nn.Module):
             pred_x = inverse_data_transform(pred_x)
 
             data_dict["pred_x"] = pred_x
+        else:
+            gt_img_norm = data_transform(x[:, 3:, :, :])
+            gt_dwt = dwt(gt_img_norm)
+            gt_LL, gt_high0 = gt_dwt[:n, ...], gt_dwt[n:, ...]
 
+            gt_LL_dwt = dwt(gt_LL)
+            gt_LL_LL, gt_high1 = gt_LL_dwt[:n, ...], gt_LL_dwt[n:, ...]
+
+            x = gt_LL_LL * a.sqrt() + e * (1.0 - a).sqrt()
+            noise_output = self.Unet(torch.cat([input_LL_LL, x], dim=1), t.float())
+            denoise_LL_LL = self.sample_training(input_LL_LL, b)
+
+            pred_LL = idwt(torch.cat((denoise_LL_LL, input_high1), dim=0))
+
+            pred_x = idwt(torch.cat((pred_LL, input_high0), dim=0))
+            pred_x = inverse_data_transform(pred_x)
+
+            data_dict["input_high0"] = input_high0
+            data_dict["input_high1"] = input_high1
+            data_dict["gt_high0"] = gt_high0
+            data_dict["gt_high1"] = gt_high1
+            data_dict["pred_LL"] = pred_LL
+            data_dict["gt_LL"] = gt_LL
+            data_dict["noise_output"] = noise_output
+            data_dict["pred_x"] = pred_x
+            data_dict["e"] = e
+            
         return data_dict
 
 
@@ -299,6 +325,13 @@ class DenoisingDiffusion(object):
         self.ema_helper = EMAHelper()
         self.ema_helper.register(self.model)
 
+        self.l2_loss = torch.nn.MSELoss()
+        self.l1_loss = torch.nn.L1Loss()
+        self.TV_loss = TVLoss()
+
+        self.optimizer, self.scheduler = utils.optimize.get_optimizer(self.config, self.model.parameters())
+        self.start_epoch, self.step = 0, 0
+
     def load_ddm_ckpt(self, load_path, ema=False):
         checkpoint = utils.logging.load_checkpoint(load_path, None)
         self.model.load_state_dict(checkpoint['state_dict'], strict=True)
@@ -308,7 +341,85 @@ class DenoisingDiffusion(object):
         print("Load checkpoint: ", os.path.exists(load_path))
         print("Current checkpoint: {}".format(load_path))
 
+    def train(self, DATASET):
+        cudnn.benchmark = True
+        train_loader, val_loader = DATASET.get_loaders()
 
+        if os.path.isfile(self.args.resume):
+            self.load_ddm_ckpt(self.args.resume)
+
+        for epoch in range(self.start_epoch, self.config.training.n_epochs):
+            print('epoch: ', epoch)
+            data_start = time.time()
+            data_time = 0
+            for i, (x, y) in enumerate(train_loader):
+                x = x.flatten(start_dim=0, end_dim=1) if x.ndim == 5 else x
+                data_time += time.time() - data_start
+                self.model.train()
+                self.step += 1
+
+                x = x.to(self.device)
+
+                output = self.model(x)
+
+                noise_loss, photo_loss, frequency_loss = self.estimation_loss(x, output)
+
+                loss = noise_loss + photo_loss + frequency_loss
+                if self.step % 10 == 0:
+                    print("step:{}, lr:{:.6f}, noise_loss:{:.4f}, photo_loss:{:.4f}, "
+                          "frequency_loss:{:.4f}".format(self.step, self.scheduler.get_last_lr()[0],
+                                                         noise_loss.item(), photo_loss.item(),
+                                                         frequency_loss.item()))
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                self.ema_helper.update(self.model)
+                data_start = time.time()
+
+                if self.step % self.config.training.validation_freq == 0 and self.step != 0:
+                    self.model.eval()
+                    self.sample_validation_patches(val_loader, self.step)
+
+                    utils.logging.save_checkpoint({'step': self.step, 'epoch': epoch + 1,
+                                                   'state_dict': self.model.state_dict(),
+                                                   'optimizer': self.optimizer.state_dict(),
+                                                   'scheduler': self.scheduler.state_dict(),
+                                                   'ema_helper': self.ema_helper.state_dict(),
+                                                   'params': self.args,
+                                                   'config': self.config},
+                                                  filename=os.path.join(self.config.data.ckpt_dir, 'model_latest'))
+                        
+            self.scheduler.step()
+
+    def estimation_loss(self, x, output):
+
+        input_high0, input_high1, gt_high0, gt_high1 = output["input_high0"], output["input_high1"],\
+                                                       output["gt_high0"], output["gt_high1"]
+
+        pred_LL, gt_LL, pred_x, noise_output, e = output["pred_LL"], output["gt_LL"], output["pred_x"],\
+                                                  output["noise_output"], output["e"]
+
+        gt_img = x[:, 3:, :, :].to(self.device)
+        # =============noise loss==================
+        noise_loss = self.l2_loss(noise_output, e)
+
+        # =============frequency loss==================
+        frequency_loss = 0.1 * (self.l2_loss(input_high0, gt_high0) +
+                                self.l2_loss(input_high1, gt_high1) +
+                                self.l2_loss(pred_LL, gt_LL)) +\
+                         0.01 * (self.TV_loss(input_high0) +
+                                 self.TV_loss(input_high1) +
+                                 self.TV_loss(pred_LL))
+
+        # =============photo loss==================
+        content_loss = self.l1_loss(pred_x, gt_img)
+        ssim_loss = 1 - ssim(pred_x, gt_img, data_range=1.0).to(self.device)
+
+        photo_loss = content_loss + ssim_loss
+
+        return noise_loss, photo_loss, frequency_loss
+        
     def sample_validation_patches(self, val_loader, step):
         image_folder = os.path.join(
             self.args.image_folder, self.config.data.type + str(self.config.data.patch_size))
