@@ -18,7 +18,7 @@ def parse_args_and_config():
     parser = argparse.ArgumentParser(description='Training Wavelet-Based Diffusion Model')
     parser.add_argument("--config", default='LOLv1.yml', type=str,
                         help="Path to the config file")
-    parser.add_argument('--resume', default='', type=str,
+    parser.add_argument('--resume', default='/content/drive/MyDrive/low_light/pretrain_model/pretrain_model.pth/model_fuliye3200+lun.pth', type=str,
                         help='Path for checkpoint to load and resume')
     parser.add_argument("--sampling_timesteps", type=int, default=10,
                         help="Number of implicit sampling steps for validation image patches")
@@ -28,7 +28,7 @@ def parse_args_and_config():
                         help='Seed for initializing training (default: 230)')
     args = parser.parse_args()
 
-    with open(os.path.join("configs", args.config), "r") as f:
+    with open(os.path.join("/content","CFWD","configs", args.config), "r") as f:
         config = yaml.safe_load(f)
     new_config = dict2namespace(config)
 
